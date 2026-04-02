@@ -111,3 +111,45 @@ target_compile_options(c2ffidef PRIVATE -Wall -Wextra -Wpedantic)
 
 # ── Install ──────────────────────────────────────────────────────────────────
 install(TARGETS c2ffidef DESTINATION bin)
+
+# ── CPack (DEB / RPM) ────────────────────────────────────────────────────────
+set(CPACK_PACKAGE_NAME        "c2ffidef")
+set(CPACK_PACKAGE_VERSION     "0.1.0")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Generate PHP FFI / Python ctypes bindings from C headers")
+set(CPACK_PACKAGE_DESCRIPTION
+    "c2ffidef parses C header files using libclang and generates ready-to-use PHP FFI::cdef() and Python ctypes binding code. Resolves #define constants, structs, unions, enums, typedefs, and function declarations from single or multi-file headers.")
+set(CPACK_PACKAGE_CONTACT     "https://github.com/yonakororin/c2ffidef")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/yonakororin/c2ffidef")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
+
+# Install prefix for packaged binary
+set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+
+# ── DEB ──────────────────────────────────────────────────────────────────────
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "yonakororin")
+set(CPACK_DEBIAN_PACKAGE_SECTION    "devel")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY   "optional")
+# Runtime dependency: the shared libclang is needed to run c2ffidef
+set(CPACK_DEBIAN_PACKAGE_DEPENDS    "libclang1-18 | libclang1-17 | libclang1-16 | libclang1-15")
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${CMAKE_SYSTEM_PROCESSOR}")
+# Use file name convention:  c2ffidef_<ver>_<arch>.deb
+set(CPACK_DEBIAN_FILE_NAME          DEB-DEFAULT)
+
+# ── RPM ──────────────────────────────────────────────────────────────────────
+set(CPACK_RPM_PACKAGE_DESCRIPTION "c2ffidef parses C header files using libclang and generates ready-to-use PHP FFI::cdef() and Python ctypes binding code. Resolves #define constants, structs, unions, enums, typedefs, and function declarations from single or multi-file headers.")
+set(CPACK_RPM_PACKAGE_LICENSE       "MIT")
+set(CPACK_RPM_PACKAGE_GROUP         "Development/Tools")
+set(CPACK_RPM_PACKAGE_REQUIRES      "clang-libs >= 15")
+set(CPACK_RPM_PACKAGE_ARCHITECTURE  "${CMAKE_SYSTEM_PROCESSOR}")
+# Use file name convention:  c2ffidef-<ver>-<release>.<arch>.rpm
+set(CPACK_RPM_FILE_NAME             RPM-DEFAULT)
+set(CPACK_RPM_PACKAGE_RELEASE       "1")
+
+# ── Generator selection ──────────────────────────────────────────────────────
+# Default to building both; override with -DCPACK_GENERATOR=DEB or RPM
+if(NOT CPACK_GENERATOR)
+    set(CPACK_GENERATOR "DEB;RPM")
+endif()
+
+include(CPack)
