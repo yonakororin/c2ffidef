@@ -5,6 +5,8 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <cassert>
+#include <cstdio>
+#include <sys/stat.h>
 
 // ============================================================
 // Helpers
@@ -392,6 +394,75 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
 }
 
 // ============================================================
+// Resource directory auto-detection
+// ============================================================
+
+// libclang needs its own builtin headers (stddef.h, stdint.h, ...).
+// On Debian/Ubuntu they live inside /usr/lib/llvm-<ver>/lib/clang/<ver>/include/.
+// On RHEL/Fedora/Oracle Linux they live inside /usr/lib/clang/<ver>/include/
+// or /usr/lib64/llvm<ver>/lib/clang/<ver>/include/.
+//
+// If the user did not pass -resource-dir explicitly, we try to find it
+// automatically so that system headers resolve correctly on all distros.
+
+static bool path_exists(const std::string& p) {
+    struct stat st;
+    return stat(p.c_str(), &st) == 0;
+}
+
+// Ask the system `clang` binary where its resource dir is.
+static std::string resource_dir_from_clang_binary() {
+    FILE* pipe = popen("clang --print-resource-dir 2>/dev/null", "r");
+    if (!pipe) return {};
+    char buf[512] = {};
+    if (fgets(buf, sizeof(buf), pipe)) {
+        pclose(pipe);
+        std::string s = buf;
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+            s.pop_back();
+        if (path_exists(s + "/include/stddef.h")) return s;
+    } else {
+        pclose(pipe);
+    }
+    return {};
+}
+
+// Search well-known filesystem paths for the clang resource directory.
+static std::string resource_dir_from_filesystem() {
+    // candidate patterns, checked in order
+    // Debian/Ubuntu: /usr/lib/llvm-<ver>/lib/clang/<ver>
+    for (int ver : {20, 19, 18, 17, 16, 15}) {
+        std::string p = "/usr/lib/llvm-" + std::to_string(ver) +
+                        "/lib/clang/" + std::to_string(ver);
+        if (path_exists(p + "/include/stddef.h")) return p;
+    }
+    // RHEL/Fedora/Oracle Linux: /usr/lib/clang/<ver>  (unversioned llvm dir)
+    for (int ver : {20, 19, 18, 17, 16, 15}) {
+        std::string p = "/usr/lib/clang/" + std::to_string(ver);
+        if (path_exists(p + "/include/stddef.h")) return p;
+    }
+    // RHEL/Oracle Linux: /usr/lib64/llvm<ver>/lib/clang/<ver>
+    for (int ver : {20, 19, 18, 17, 16, 15}) {
+        std::string p = "/usr/lib64/llvm" + std::to_string(ver) +
+                        "/lib/clang/" + std::to_string(ver);
+        if (path_exists(p + "/include/stddef.h")) return p;
+    }
+    return {};
+}
+
+// Returns the resource-dir string to pass as -resource-dir, or empty if
+// -resource-dir is already present in extra_args or none is found.
+static std::string detect_resource_dir(const ParseOptions& opts) {
+    // If the caller already specified -resource-dir, don't override it.
+    for (const auto& a : opts.extra_args) {
+        if (a.find("-resource-dir") != std::string::npos) return {};
+    }
+    std::string dir = resource_dir_from_clang_binary();
+    if (dir.empty()) dir = resource_dir_from_filesystem();
+    return dir;
+}
+
+// ============================================================
 // Public API
 // ============================================================
 
@@ -400,10 +471,19 @@ TranslationUnit parse_header(const std::string& filepath,
     CXIndex index = clang_createIndex(0, 0);
     if (!index) throw std::runtime_error("clang_createIndex failed");
 
+    // Auto-detect clang resource directory so that builtin headers
+    // (stddef.h, stdint.h, ...) are found on all distros.
+    std::string resource_dir     = detect_resource_dir(opts);
+    std::string resource_dir_arg = resource_dir.empty()
+                                   ? std::string{}
+                                   : "-resource-dir=" + resource_dir;
+
     std::vector<const char*> args;
     // treat as C even if extension differs
     args.push_back("-x");
     args.push_back("c");
+    if (!resource_dir_arg.empty())
+        args.push_back(resource_dir_arg.c_str());
     for (auto& a : opts.extra_args)
         args.push_back(a.c_str());
 
