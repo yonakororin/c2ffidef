@@ -171,38 +171,136 @@ struct VisitorState {
 // Struct / Union visitor
 // ============================================================
 
+// Forward declarations — field_visitor and build_record are mutually recursive
+// (field_visitor calls build_record for nested anonymous structs).
+// build_enum is also called from field_visitor for anonymous nested enums.
+static RecordDecl build_record(CXCursor cursor, const std::string& name,
+                               TranslationUnit* tu,
+                               std::unordered_set<std::string>* seen_records,
+                               std::unordered_set<std::string>* seen_enums,
+                               std::unordered_set<std::string>* seen_typedefs);
+static EnumDecl build_enum(CXCursor cursor);
+
 struct FieldVisitorState {
-    RecordDecl& record;
+    RecordDecl&                      record;
+    std::string                      parent_name;   // name of the enclosing record
+    TranslationUnit*                 tu            = nullptr;
+    std::unordered_set<std::string>* seen_records  = nullptr;
+    std::unordered_set<std::string>* seen_enums    = nullptr;
+    std::unordered_set<std::string>* seen_typedefs = nullptr;
 };
 
 static CXChildVisitResult field_visitor(CXCursor cursor, CXCursor /*parent*/,
                                         CXClientData data) {
     auto* state = reinterpret_cast<FieldVisitorState*>(data);
 
-    if (clang_getCursorKind(cursor) == CXCursor_FieldDecl) {
-        FieldDecl field;
-        field.name      = get_cursor_spelling(cursor);
-        field.type      = convert_type(clang_getCursorType(cursor));
-        field.bit_width = clang_getFieldDeclBitWidth(cursor); // -1 if not bit-field
-        state->record.fields.push_back(std::move(field));
+    if (clang_getCursorKind(cursor) != CXCursor_FieldDecl)
+        return CXChildVisit_Continue;
+
+    FieldDecl field;
+    field.name      = get_cursor_spelling(cursor);
+    field.bit_width = clang_getFieldDeclBitWidth(cursor); // -1 if not bit-field
+
+    // Detect anonymous nested Record or Enum (e.g. "struct { float w,h; } size;"
+    // or "enum { A=0, B=1 } mode;" directly inside a struct/union).
+    // libclang returns "(unnamed at ...)" for these; we synthesise a name instead.
+    if (state->tu) {
+        CXType ft = clang_getCursorType(cursor);
+        // Unwrap elaborated types ("struct X", "enum Y", ...)
+        CXType named = ft;
+        if (ft.kind == CXType_Elaborated)
+            named = clang_Type_getNamedType(ft);
+
+        if (named.kind == CXType_Record || named.kind == CXType_Enum) {
+            CXCursor decl = clang_getTypeDeclaration(named);
+
+            // Use clang_Cursor_isAnonymous() — the cursor spelling for anonymous
+            // types is "struct (unnamed at ...)", not empty.
+            if (clang_Cursor_isAnonymous(decl)) {
+                // Anonymous nested type — synthesise a unique name
+                std::string synth = "_anon_" + state->parent_name;
+                if (!field.name.empty()) synth += "_" + field.name;
+
+                if (named.kind == CXType_Record) {
+                    // Register the anonymous struct/union (recursively handles
+                    // any further nested anonymous types inside it)
+                    if (!state->seen_records->count(synth)) {
+                        state->seen_records->insert(synth);
+                        RecordDecl inner = build_record(decl, synth,
+                            state->tu, state->seen_records,
+                            state->seen_enums, state->seen_typedefs);
+                        state->tu->records.push_back(std::move(inner));
+                    }
+                    // Add a typedef so PHP FFI can reference the type by name
+                    // (without "struct" keyword) and ctypes sees a proper class name.
+                    if (state->seen_typedefs && !state->seen_typedefs->count(synth)) {
+                        state->seen_typedefs->insert(synth);
+                        TypedefDecl td;
+                        td.name = synth;
+                        td.underlying = std::make_shared<CType>();
+                        td.underlying->kind = TypeKind::Record;
+                        td.underlying->name = synth;
+                        state->tu->typedefs.push_back(std::move(td));
+                    }
+                    auto ct = std::make_shared<CType>();
+                    ct->kind = TypeKind::Record;
+                    ct->name = synth;
+                    field.type = ct;
+                } else {
+                    // Anonymous enum — build and register it
+                    if (!state->seen_enums->count(synth)) {
+                        state->seen_enums->insert(synth);
+                        EnumDecl ed = build_enum(decl);
+                        ed.name = synth;
+                        state->tu->enums.push_back(std::move(ed));
+                    }
+                    // Add a typedef so the enum constants' alias is emitted
+                    if (state->seen_typedefs && !state->seen_typedefs->count(synth)) {
+                        state->seen_typedefs->insert(synth);
+                        TypedefDecl td;
+                        td.name = synth;
+                        td.underlying = std::make_shared<CType>();
+                        td.underlying->kind = TypeKind::Enum;
+                        td.underlying->name = synth;
+                        state->tu->typedefs.push_back(std::move(td));
+                    }
+                    // Use Typedef kind so ctypes_type returns the alias name
+                    // without an inline "# enum" comment that would break Python.
+                    auto ct = std::make_shared<CType>();
+                    ct->kind = TypeKind::Typedef;
+                    ct->name = synth;
+                    field.type = ct;
+                }
+                state->record.fields.push_back(std::move(field));
+                return CXChildVisit_Continue;
+            }
+        }
     }
 
+    // Normal (named) type
+    field.type = convert_type(clang_getCursorType(cursor));
+    state->record.fields.push_back(std::move(field));
     return CXChildVisit_Continue;
 }
 
-static RecordDecl build_record(CXCursor cursor) {
+static RecordDecl build_record(CXCursor cursor, const std::string& name,
+                               TranslationUnit* tu,
+                               std::unordered_set<std::string>* seen_records,
+                               std::unordered_set<std::string>* seen_enums,
+                               std::unordered_set<std::string>* seen_typedefs) {
     RecordDecl rec;
-    rec.name     = get_cursor_spelling(cursor);
+    rec.name     = name;
     rec.is_union = (clang_getCursorKind(cursor) == CXCursor_UnionDecl);
     rec.is_forward_decl = !clang_isCursorDefinition(cursor);
 
     if (!rec.is_forward_decl) {
-        FieldVisitorState fstate{rec};
+        FieldVisitorState fstate{rec, name, tu, seen_records, seen_enums, seen_typedefs};
         clang_visitChildren(cursor, field_visitor,
                             reinterpret_cast<CXClientData>(&fstate));
     }
     return rec;
 }
+
 
 // ============================================================
 // Enum visitor
@@ -302,7 +400,9 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
             if (state->seen_records.count(name)) break;
         }
         state->seen_records.insert(name);
-        state->tu.records.push_back(build_record(cursor));
+        state->tu.records.push_back(build_record(cursor, name,
+            &state->tu, &state->seen_records,
+            &state->seen_enums, &state->seen_typedefs));
         break;
     }
 
@@ -341,17 +441,18 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
             if (decl_name.empty()) {
                 // Anonymous: adopt the record/enum with the typedef name
                 if (resolved.kind == CXType_Record) {
-                    RecordDecl rec = build_record(decl);
-                    rec.name = name;
                     if (!state->seen_records.count(name)) {
                         state->seen_records.insert(name);
+                        RecordDecl rec = build_record(decl, name,
+                            &state->tu, &state->seen_records,
+                            &state->seen_enums, &state->seen_typedefs);
                         state->tu.records.push_back(std::move(rec));
                     }
                 } else {
-                    EnumDecl ed = build_enum(decl);
-                    ed.name = name;
                     if (!state->seen_enums.count(name)) {
                         state->seen_enums.insert(name);
+                        EnumDecl ed = build_enum(decl);
+                        ed.name = name;
                         state->tu.enums.push_back(std::move(ed));
                     }
                 }
@@ -363,7 +464,9 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
                 if (resolved.kind == CXType_Record &&
                     !state->seen_records.count(decl_name)) {
                     state->seen_records.insert(decl_name);
-                    state->tu.records.push_back(build_record(decl));
+                    state->tu.records.push_back(build_record(decl, decl_name,
+                        &state->tu, &state->seen_records,
+                        &state->seen_enums, &state->seen_typedefs));
                 } else if (resolved.kind == CXType_Enum &&
                            !state->seen_enums.count(decl_name)) {
                     state->seen_enums.insert(decl_name);
