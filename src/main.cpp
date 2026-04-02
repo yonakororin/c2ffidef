@@ -24,6 +24,8 @@ static void print_usage(const char* argv0) {
         "  --no-system    Skip declarations from system headers (default: on)\n"
         "  --main-only    Only emit declarations defined in <header.h> itself;\n"
         "                 ignore included user headers (default: off)\n"
+        "  --lang <lang>  Language mode: auto | c | c++ (default: auto)\n"
+        "                 auto = c++ for .hpp/.hh/.hxx, c for .h\n"
         "  --validate     Validate the generated code with cc / python3.\n"
         "                 Results are printed to stderr; exit code 2 on failure.\n"
         "  -h, --help     Show this help\n"
@@ -76,6 +78,13 @@ int main(int argc, char* argv[]) {
             parse_opts.skip_system_includes = true;
         } else if (arg == "--main-only") {
             parse_opts.main_file_only = true;
+        } else if (arg == "--lang" && i + 1 < argc) {
+            std::string lang = argv[++i];
+            if (lang != "auto" && lang != "c" && lang != "c++") {
+                std::cerr << "Error: --lang must be auto, c, or c++\n";
+                return 1;
+            }
+            parse_opts.language = lang;
         } else if (arg == "--validate") {
             do_validate = true;
         } else if (arg[0] != '-') {

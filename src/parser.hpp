@@ -8,6 +8,11 @@ struct ParseOptions {
     bool skip_system_includes = true;         // skip declarations from system headers
     bool main_file_only = false;              // if true, only emit decls from the top-level file
                                               // (ignore included user headers)
+    // Language mode.
+    // "auto"  : use C++ for .hpp/.hh/.cxx/.cpp, C for everything else (default)
+    // "c"     : always parse as C
+    // "c++"   : always parse as C++
+    std::string language = "auto";
 };
 
 // Parse a C header file and return a TranslationUnit.

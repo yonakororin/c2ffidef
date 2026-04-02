@@ -276,6 +276,14 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
     CXCursorKind kind = clang_getCursorKind(cursor);
 
     switch (kind) {
+    // ── extern "C" { ... } block ────────────────────────────────────────────
+    // Recurse into linkage-spec nodes so that declarations inside
+    // extern "C" {} are processed exactly like top-level C declarations.
+    case CXCursor_LinkageSpec:
+        clang_visitChildren(cursor, top_visitor,
+                            reinterpret_cast<CXClientData>(state));
+        return CXChildVisit_Continue;
+
     case CXCursor_StructDecl:
     case CXCursor_UnionDecl: {
         std::string name = get_cursor_spelling(cursor);
@@ -478,10 +486,24 @@ TranslationUnit parse_header(const std::string& filepath,
                                    ? std::string{}
                                    : "-resource-dir=" + resource_dir;
 
+    // Determine language mode.
+    // In "auto" mode, use C++ for common C++ header extensions.
+    auto ends_with = [](const std::string& s, const std::string& suffix) {
+        return s.size() >= suffix.size() &&
+               s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    bool use_cpp = false;
+    if (opts.language == "c++") {
+        use_cpp = true;
+    } else if (opts.language == "auto") {
+        for (const char* ext : {".hpp", ".hh", ".hxx", ".h++", ".cpp", ".cxx"}) {
+            if (ends_with(filepath, ext)) { use_cpp = true; break; }
+        }
+    }
+
     std::vector<const char*> args;
-    // treat as C even if extension differs
     args.push_back("-x");
-    args.push_back("c");
+    args.push_back(use_cpp ? "c++" : "c");
     if (!resource_dir_arg.empty())
         args.push_back(resource_dir_arg.c_str());
     for (auto& a : opts.extra_args)
