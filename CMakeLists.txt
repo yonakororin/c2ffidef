@@ -5,14 +5,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ── Locate libclang ──────────────────────────────────────────────────────────
-# Try pkg-config first, then fall back to well-known LLVM paths.
+# Try pkg-config first, then fall back to well-known LLVM install paths.
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
     pkg_check_modules(LIBCLANG QUIET libclang)
 endif()
 
 if(NOT LIBCLANG_FOUND)
-    # Common LLVM versioned install paths (Debian/Ubuntu)
+    # Debian / Ubuntu: /usr/lib/llvm-<ver>/
     foreach(LLVM_VER 18 17 16 15)
         set(_llvm_dir "/usr/lib/llvm-${LLVM_VER}")
         if(EXISTS "${_llvm_dir}/lib/libclang.so")
@@ -26,10 +26,42 @@ if(NOT LIBCLANG_FOUND)
 endif()
 
 if(NOT LIBCLANG_FOUND)
+    # RHEL / Fedora / Oracle Linux / Rocky / AlmaLinux: /usr/lib64/llvm<ver>/
+    foreach(LLVM_VER 18 17 16 15)
+        foreach(_llvm_dir
+                "/usr/lib64/llvm${LLVM_VER}"
+                "/usr/lib/llvm${LLVM_VER}")
+            if(EXISTS "${_llvm_dir}/lib/libclang.so")
+                set(LIBCLANG_INCLUDE_DIRS "${_llvm_dir}/include")
+                set(LIBCLANG_LIBRARIES    "${_llvm_dir}/lib/libclang.so")
+                set(LIBCLANG_FOUND TRUE)
+                message(STATUS "Found libclang-${LLVM_VER} at ${_llvm_dir}")
+                break()
+            endif()
+        endforeach()
+        if(LIBCLANG_FOUND)
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(NOT LIBCLANG_FOUND)
     message(FATAL_ERROR
-        "libclang not found. Install it with:\n"
+        "libclang not found. Install it with one of the following:\n"
+        "  # Debian / Ubuntu\n"
         "  sudo apt install libclang-18-dev\n"
-        "or set LIBCLANG_INCLUDE_DIRS / LIBCLANG_LIBRARIES manually.")
+        "\n"
+        "  # Fedora\n"
+        "  sudo dnf install clang-devel\n"
+        "\n"
+        "  # RHEL 9 / Oracle Linux 9 / Rocky / AlmaLinux\n"
+        "  sudo dnf install llvm-toolset clang-devel\n"
+        "\n"
+        "  # RHEL 8 系（モジュール有効化が必要）\n"
+        "  sudo dnf module enable llvm-toolset\n"
+        "  sudo dnf install clang-devel\n"
+        "\n"
+        "または LIBCLANG_INCLUDE_DIRS / LIBCLANG_LIBRARIES を手動で指定してください。")
 endif()
 
 # ── Sources ──────────────────────────────────────────────────────────────────
