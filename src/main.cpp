@@ -13,7 +13,14 @@
 
 static void print_usage(const char* argv0) {
     std::cerr <<
-        "Usage: " << argv0 << " [OPTIONS] <header.h>\n"
+        "Usage: " << argv0 << " [OPTIONS] <file>\n"
+        "\n"
+        "Input file types:\n"
+        "  .h              C header   — all declarations emitted\n"
+        "  .hpp / .hh      C++ header — extern \"C\" declarations only\n"
+        "  .c              C source   — function *definitions* from this file;\n"
+        "                               type definitions from included headers\n"
+        "  .cpp / .cxx     C++ source — extern \"C\" function definitions only\n"
         "\n"
         "Options:\n"
         "  -l <library>   Shared library name (default: libfoo.so)\n"

@@ -162,6 +162,9 @@ struct VisitorState {
     std::unordered_set<std::string> seen_enums;
     std::unordered_set<std::string> seen_typedefs;
     std::unordered_set<std::string> seen_functions;
+    bool is_cpp                  = false;  // parsing in C++ mode
+    bool in_extern_c             = false;  // currently inside an extern "C" block
+    bool functions_main_file_only = false; // restrict function collection to main file
 };
 
 // ============================================================
@@ -279,10 +282,14 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
     // ── extern "C" { ... } block ────────────────────────────────────────────
     // Recurse into linkage-spec nodes so that declarations inside
     // extern "C" {} are processed exactly like top-level C declarations.
-    case CXCursor_LinkageSpec:
+    case CXCursor_LinkageSpec: {
+        bool prev        = state->in_extern_c;
+        state->in_extern_c = true;
         clang_visitChildren(cursor, top_visitor,
                             reinterpret_cast<CXClientData>(state));
+        state->in_extern_c = prev;
         return CXChildVisit_Continue;
+    }
 
     case CXCursor_StructDecl:
     case CXCursor_UnionDecl: {
@@ -372,6 +379,27 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
     }
 
     case CXCursor_FunctionDecl: {
+        // In C++ mode, only emit functions that are inside an extern "C" block.
+        // Top-level C++ free functions and class methods are not accessible via FFI.
+        if (state->is_cpp && !state->in_extern_c) break;
+
+        // Skip functions with internal linkage (static / anonymous-namespace).
+        // These are not accessible from outside the translation unit.
+        CXLinkageKind linkage = clang_getCursorLinkage(cursor);
+        if (linkage == CXLinkage_Internal || linkage == CXLinkage_NoLinkage) break;
+
+        // When parsing a source file, restrict function collection to the
+        // top-level file. Type definitions from included headers are still
+        // collected so that referenced types remain available in output.
+        if (state->functions_main_file_only) {
+            CXSourceLocation loc = clang_getCursorLocation(cursor);
+            CXFile file;
+            clang_getSpellingLocation(loc, &file, nullptr, nullptr, nullptr);
+            if (!file) break;
+            std::string fname = cx_to_str(clang_getFileName(file));
+            if (fname != state->main_file) break;
+        }
+
         std::string name = get_cursor_spelling(cursor);
         if (state->seen_functions.count(name)) break;
         state->seen_functions.insert(name);
@@ -486,19 +514,44 @@ TranslationUnit parse_header(const std::string& filepath,
                                    ? std::string{}
                                    : "-resource-dir=" + resource_dir;
 
-    // Determine language mode.
-    // In "auto" mode, use C++ for common C++ header extensions.
+    // Determine language mode and whether this is a source file.
+    // In "auto" mode:
+    //   .cpp / .cxx / .cc / .c++ → C++ source
+    //   .hpp / .hh  / .hxx / .h++ → C++ header
+    //   .c                        → C source
+    //   anything else             → C header
     auto ends_with = [](const std::string& s, const std::string& suffix) {
         return s.size() >= suffix.size() &&
                s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
     };
-    bool use_cpp = false;
+    bool use_cpp     = false;
+    bool is_src_file = false;   // .c / .cpp  (definition file, not a header)
     if (opts.language == "c++") {
         use_cpp = true;
-    } else if (opts.language == "auto") {
-        for (const char* ext : {".hpp", ".hh", ".hxx", ".h++", ".cpp", ".cxx"}) {
-            if (ends_with(filepath, ext)) { use_cpp = true; break; }
+    } else if (opts.language == "c") {
+        // forced C
+    } else {
+        // auto
+        for (const char* ext : {".cpp", ".cxx", ".cc", ".c++"}) {
+            if (ends_with(filepath, ext)) { use_cpp = true; is_src_file = true; break; }
         }
+        if (!use_cpp) {
+            if (ends_with(filepath, ".c")) {
+                is_src_file = true;         // C source
+            } else {
+                for (const char* ext : {".hpp", ".hh", ".hxx", ".h++"}) {
+                    if (ends_with(filepath, ext)) { use_cpp = true; break; }
+                }
+            }
+        }
+    }
+
+    // For source files, restrict *function* collection to the source file itself.
+    // Type definitions from included user headers are still collected so that
+    // referenced types (struct, typedef, enum) appear in the FFI output.
+    ParseOptions effective_opts = opts;
+    if (is_src_file && !effective_opts.functions_main_file_only) {
+        effective_opts.functions_main_file_only = true;
     }
 
     std::vector<const char*> args;
@@ -545,7 +598,9 @@ TranslationUnit parse_header(const std::string& filepath,
         : filepath;
 
     TranslationUnit result;
-    VisitorState state{result, opts, main_file_path, {}, {}, {}, {}};
+    VisitorState state{result, effective_opts, main_file_path, {}, {}, {}, {}};
+    state.is_cpp                   = use_cpp;
+    state.functions_main_file_only = effective_opts.functions_main_file_only;
 
     CXCursor root = clang_getTranslationUnitCursor(tu);
     clang_visitChildren(root, top_visitor,

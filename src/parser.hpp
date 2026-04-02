@@ -13,6 +13,12 @@ struct ParseOptions {
     // "c"     : always parse as C
     // "c++"   : always parse as C++
     std::string language = "auto";
+
+    // If true, restrict *function* collection to the top-level file only.
+    // Type definitions (struct/enum/typedef) are still collected from all
+    // user headers so that referenced types are available in the output.
+    // Automatically set to true when parsing .c / .cpp source files.
+    bool functions_main_file_only = false;
 };
 
 // Parse a C header file and return a TranslationUnit.
