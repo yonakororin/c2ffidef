@@ -12,7 +12,7 @@ if(PkgConfig_FOUND)
 endif()
 
 if(NOT LIBCLANG_FOUND)
-    # Debian / Ubuntu: /usr/lib/llvm-<ver>/
+    # Debian / Ubuntu: /usr/lib/llvm-<ver>/lib/libclang.so
     foreach(LLVM_VER 18 17 16 15)
         set(_llvm_dir "/usr/lib/llvm-${LLVM_VER}")
         if(EXISTS "${_llvm_dir}/lib/libclang.so")
@@ -26,20 +26,47 @@ if(NOT LIBCLANG_FOUND)
 endif()
 
 if(NOT LIBCLANG_FOUND)
-    # RHEL / Fedora / Oracle Linux / Rocky / AlmaLinux: /usr/lib64/llvm<ver>/
-    foreach(LLVM_VER 18 17 16 15)
-        foreach(_llvm_dir
-                "/usr/lib64/llvm${LLVM_VER}"
-                "/usr/lib/llvm${LLVM_VER}")
-            if(EXISTS "${_llvm_dir}/lib/libclang.so")
-                set(LIBCLANG_INCLUDE_DIRS "${_llvm_dir}/include")
-                set(LIBCLANG_LIBRARIES    "${_llvm_dir}/lib/libclang.so")
+    # RHEL / Fedora / Oracle Linux / Rocky / AlmaLinux:
+    #   - /usr/lib64/llvm<ver>/lib64/libclang.so  (versioned, lib64 subdir)
+    #   - /usr/lib64/llvm<ver>/lib/libclang.so    (versioned, lib subdir)
+    #   - /usr/lib64/libclang.so                  (unversioned system path)
+    foreach(LLVM_VER 20 19 18 17 16 15)
+        foreach(_candidate
+                "/usr/lib64/llvm${LLVM_VER}/lib64/libclang.so"
+                "/usr/lib64/llvm${LLVM_VER}/lib/libclang.so"
+                "/usr/lib/llvm${LLVM_VER}/lib64/libclang.so"
+                "/usr/lib/llvm${LLVM_VER}/lib/libclang.so")
+            if(EXISTS "${_candidate}")
+                get_filename_component(_llvm_base "${_candidate}" DIRECTORY)
+                get_filename_component(_llvm_base "${_llvm_base}" DIRECTORY)
+                # Prefer versioned include; fall back to /usr/include
+                if(EXISTS "${_llvm_base}/include/clang-c/Index.h")
+                    set(LIBCLANG_INCLUDE_DIRS "${_llvm_base}/include")
+                else()
+                    set(LIBCLANG_INCLUDE_DIRS "/usr/include")
+                endif()
+                set(LIBCLANG_LIBRARIES "${_candidate}")
                 set(LIBCLANG_FOUND TRUE)
-                message(STATUS "Found libclang-${LLVM_VER} at ${_llvm_dir}")
+                message(STATUS "Found libclang-${LLVM_VER} at ${_candidate}")
                 break()
             endif()
         endforeach()
         if(LIBCLANG_FOUND)
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(NOT LIBCLANG_FOUND)
+    # Last resort: unversioned /usr/lib64/libclang.so (Oracle Linux / RHEL system install)
+    foreach(_candidate
+            "/usr/lib64/libclang.so"
+            "/usr/lib/libclang.so")
+        if(EXISTS "${_candidate}")
+            set(LIBCLANG_INCLUDE_DIRS "/usr/include")
+            set(LIBCLANG_LIBRARIES    "${_candidate}")
+            set(LIBCLANG_FOUND TRUE)
+            message(STATUS "Found libclang at ${_candidate}")
             break()
         endif()
     endforeach()
