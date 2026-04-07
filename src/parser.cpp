@@ -22,6 +22,16 @@ static std::string get_cursor_spelling(CXCursor c) {
     return cx_to_str(clang_getCursorSpelling(c));
 }
 
+// Returns true if the cursor represents an unnamed type.
+// clang_Cursor_isAnonymous() catches embedded anonymous struct/union/enum fields,
+// but top-level unnamed declarations (e.g. "enum { A=1 };") return a spelling
+// like "(unnamed at foo.h:1:1)" instead of an empty string, so we check both.
+static bool is_unnamed_cursor(CXCursor c) {
+    if (clang_Cursor_isAnonymous(c)) return true;
+    std::string sp = get_cursor_spelling(c);
+    return sp.empty() || sp.rfind("(unnamed", 0) == 0;
+}
+
 static std::string get_type_spelling(CXType t) {
     return cx_to_str(clang_getTypeSpelling(t));
 }
@@ -92,10 +102,8 @@ static CTypePtr convert_type(CXType t) {
     case CXType_Record: {
         result->kind = TypeKind::Record;
         CXCursor decl = clang_getTypeDeclaration(t);
-        result->name  = get_cursor_spelling(decl);
-        // anonymous structs/unions get a synthetic name from spelling
-        if (result->name.empty()) {
-            result->name = get_type_spelling(t);
+        if (!is_unnamed_cursor(decl)) {
+            result->name = get_cursor_spelling(decl);
         }
         break;
     }
@@ -103,9 +111,8 @@ static CTypePtr convert_type(CXType t) {
     case CXType_Enum: {
         result->kind = TypeKind::Enum;
         CXCursor decl = clang_getTypeDeclaration(t);
-        result->name  = get_cursor_spelling(decl);
-        if (result->name.empty()) {
-            result->name = get_type_spelling(t);
+        if (!is_unnamed_cursor(decl)) {
+            result->name = get_cursor_spelling(decl);
         }
         break;
     }
@@ -392,8 +399,9 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
     case CXCursor_StructDecl:
     case CXCursor_UnionDecl: {
         std::string name = get_cursor_spelling(cursor);
-        // Skip anonymous structs that are part of a typedef (handled via typedef)
-        if (name.empty()) break;
+        // Skip anonymous/unnamed structs/unions — handled via TypedefDecl or
+        // field_visitor (with a synthetic name).
+        if (is_unnamed_cursor(cursor)) break;
         // Only process the definition (or first forward decl if no definition)
         if (!clang_isCursorDefinition(cursor)) {
             // Only add forward decl if we haven't seen this name yet
@@ -408,7 +416,8 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
 
     case CXCursor_EnumDecl: {
         std::string name = get_cursor_spelling(cursor);
-        if (name.empty()) break;
+        // Skip anonymous/unnamed enums — handled via TypedefDecl or field_visitor.
+        if (is_unnamed_cursor(cursor)) break;
         if (!clang_isCursorDefinition(cursor)) {
             if (state->seen_enums.count(name)) break;
         }
@@ -436,7 +445,7 @@ static CXChildVisitResult top_visitor(CXCursor cursor, CXCursor /*parent*/,
         // If the underlying type is an anonymous or named record/enum, handle specially
         if (resolved.kind == CXType_Record || resolved.kind == CXType_Enum) {
             CXCursor decl = clang_getTypeDeclaration(resolved);
-            std::string decl_name = get_cursor_spelling(decl);
+            std::string decl_name = is_unnamed_cursor(decl) ? std::string{} : get_cursor_spelling(decl);
 
             if (decl_name.empty()) {
                 // Anonymous: adopt the record/enum with the typedef name
