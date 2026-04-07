@@ -297,8 +297,10 @@ CtypesGenerator::CtypesGenerator(const GeneratorOptions& opts)
     : Generator(opts) {}
 
 void CtypesGenerator::generate(const TranslationUnit& tu, std::ostream& out) {
+    const std::string& ind = opts_.indent;
+    std::string slug = library_slug(opts_.library_name);
+
     out << "import ctypes\nimport ctypes.util\n\n";
-    out << "_lib = ctypes.CDLL(\"" << opts_.library_name << "\")\n\n";
 
     // Collect names of structs that appear BOTH as forward decl and as definition.
     // For these, we emit:
@@ -308,16 +310,14 @@ void CtypesGenerator::generate(const TranslationUnit& tu, std::ostream& out) {
     for (const auto& r : tu.records)
         if (r.is_forward_decl) forward_names.insert(r.name);
 
-    // 1. Forward declaration stubs (struct/union only)
+    // 1. Forward declaration stubs (struct/union only) — module level
     for (const auto& r : tu.records) {
         if (r.is_forward_decl) {
             emit_record(r, out);
         }
     }
 
-    // 2. Enum constants + enum typedef aliases.
-    //    Must come before struct definitions that reference enum typedef names
-    //    in their _fields_ (e.g. "("color", ColorChannel)").
+    // 2. Enum constants + enum typedef aliases — module level
     for (const auto& e : tu.enums) {
         emit_enum(e, out);
     }
@@ -329,12 +329,10 @@ void CtypesGenerator::generate(const TranslationUnit& tu, std::ostream& out) {
         }
     }
 
-    // 3. Struct/union definitions (can now reference enum typedef names)
+    // 3. Struct/union definitions — module level
     for (const auto& r : tu.records) {
         if (!r.is_forward_decl) {
             if (forward_names.count(r.name)) {
-                // Already have the class stub; emit _fields_ assignment instead
-                const std::string& ind = opts_.indent;
                 out << r.name << "._fields_ = [\n";
                 for (const auto& f : r.fields) {
                     std::string fname = f.name.empty() ? "_padding" : f.name;
@@ -349,17 +347,35 @@ void CtypesGenerator::generate(const TranslationUnit& tu, std::ostream& out) {
         }
     }
 
-    // 4. Non-enum typedefs (struct aliases, function pointers, primitives)
+    // 4. Non-enum typedefs (struct aliases, function pointers, primitives) — module level
     for (const auto& td : tu.typedefs) {
         if (!td.underlying) continue;
-        // Skip enum self-aliases: already emitted in step 2
         if (td.underlying->kind == TypeKind::Enum &&
             td.underlying->name == td.name) continue;
         emit_typedef(td, out);
     }
 
-    // Functions
+    // 5. load_lib_<slug>() — loads the shared library and sets up function bindings
+    out << "def load_lib_" << slug << "(library_path: str) -> ctypes.CDLL:\n";
+    out << ind << "_lib = ctypes.CDLL(library_path)\n";
+    if (!tu.functions.empty()) out << "\n";
     for (const auto& f : tu.functions) {
-        emit_function(f, out);
+        // argtypes
+        out << ind << "_lib." << f.name << ".argtypes = [";
+        for (size_t i = 0; i < f.params.size(); ++i) {
+            if (i) out << ", ";
+            out << ctypes_type(f.params[i].type);
+        }
+        if (f.is_variadic) {
+            out << "]  # variadic; omit extra args or use restype only\n";
+        } else {
+            out << "]\n";
+        }
+        // restype
+        std::string restype = ctypes_type(f.return_type);
+        out << ind << "_lib." << f.name << ".restype  = "
+            << (restype == "None" ? "None" : restype) << "\n";
+        out << "\n";
     }
+    out << ind << "return _lib\n";
 }

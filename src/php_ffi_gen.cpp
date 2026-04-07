@@ -247,8 +247,10 @@ static bool needs_stdint(const TranslationUnit& tu) {
 }
 
 void PhpFfiGenerator::generate(const TranslationUnit& tu, std::ostream& out) {
+    std::string slug = library_slug(opts_.library_name);
     out << "<?php\n\n";
-    out << "$ffi = FFI::cdef(<<<'CDEF'\n";
+    out << "function load_ffi_" << slug << "(string $library_path): \\FFI {\n";
+    out << opts_.indent << "return FFI::cdef(<<<'CDEF'\n";
 
     // 1. Standard type preamble (if needed)
     if (needs_stdint(tu)) {
@@ -313,5 +315,6 @@ void PhpFfiGenerator::generate(const TranslationUnit& tu, std::ostream& out) {
         emit_function(f, out);
     }
 
-    out << "CDEF, \"" << opts_.library_name << "\");\n";
+    out << "CDEF, $library_path);\n";
+    out << "}\n";
 }
